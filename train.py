@@ -48,6 +48,11 @@ def _normalize_gate_target(target: torch.Tensor) -> torch.Tensor:
     return target / (target.sum(dim=1, keepdim=True) + 1e-6)
 
 
+def _prob_to_logits(prob: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    prob = prob.clamp(eps, 1.0 - eps)
+    return torch.log(prob) - torch.log1p(-prob)
+
+
 def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tensor], train_cfg: Dict) -> Dict[str, torch.Tensor]:
     main_loss = utils.structure_loss(outputs["logits"], mask)
     base_logits = outputs.get("base_logits", None)
@@ -130,8 +135,8 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
         edge_target = F.avg_pool2d(edge, kernel_size=5, stride=1, padding=2)
         uncertainty_loss = torch.stack(
             [
-                F.binary_cross_entropy(
-                    boundary.clamp(1e-6, 1.0 - 1e-6),
+                F.binary_cross_entropy_with_logits(
+                    _prob_to_logits(boundary),
                     F.interpolate(edge_target, size=boundary.shape[-2:], mode="bilinear", align_corners=False),
                 )
                 for boundary in boundary_uncertainties
@@ -153,7 +158,7 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
     if edge is not None and rectify_gate is not None and rectify_strength is not None:
         focus_target = F.avg_pool2d(edge, kernel_size=7, stride=1, padding=3)
         focus_target = F.interpolate(focus_target, size=rectify_gate.shape[-2:], mode="bilinear", align_corners=False)
-        rectify_loss = F.binary_cross_entropy(rectify_gate.clamp(1e-6, 1.0 - 1e-6), focus_target)
+        rectify_loss = F.binary_cross_entropy_with_logits(_prob_to_logits(rectify_gate), focus_target)
         rectify_loss = rectify_loss + 0.5 * (rectify_strength * (1.0 - focus_target)).mean()
         if rectified_depth_edge is not None:
             normalized_rectified_edge = rectified_depth_edge / (
@@ -168,10 +173,9 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
                 disagreement_target,
                 F.interpolate(rectify_strength.detach(), size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False),
             )
-        disagreement_loss = F.binary_cross_entropy(
-            F.interpolate(disagreement_map, size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False).clamp(
-                1e-6, 1.0 - 1e-6
-            ),
+        disagreement_prob = F.interpolate(disagreement_map, size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False)
+        disagreement_loss = F.binary_cross_entropy_with_logits(
+            _prob_to_logits(disagreement_prob),
             disagreement_target,
         )
 
