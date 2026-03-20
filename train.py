@@ -48,9 +48,16 @@ def _normalize_gate_target(target: torch.Tensor) -> torch.Tensor:
     return target / (target.sum(dim=1, keepdim=True) + 1e-6)
 
 
-def _prob_to_logits(prob: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
-    prob = prob.clamp(eps, 1.0 - eps)
-    return torch.log(prob) - torch.log1p(-prob)
+def _prob_to_logits(prob: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
+    # Under AMP, probabilities can numerically snap to 0/1 in fp16.
+    # Convert in fp32 with a larger epsilon before taking the logit.
+    prob = prob.float().clamp(eps, 1.0 - eps)
+    return torch.logit(prob, eps=eps)
+
+
+def _stable_prob_bce(prob: torch.Tensor, target: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
+    logits = _prob_to_logits(prob, eps=eps)
+    return F.binary_cross_entropy_with_logits(logits, target.float().to(dtype=logits.dtype))
 
 
 def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tensor], train_cfg: Dict) -> Dict[str, torch.Tensor]:
@@ -135,8 +142,8 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
         edge_target = F.avg_pool2d(edge, kernel_size=5, stride=1, padding=2)
         uncertainty_loss = torch.stack(
             [
-                F.binary_cross_entropy_with_logits(
-                    _prob_to_logits(boundary),
+                _stable_prob_bce(
+                    boundary,
                     F.interpolate(edge_target, size=boundary.shape[-2:], mode="bilinear", align_corners=False),
                 )
                 for boundary in boundary_uncertainties
@@ -158,7 +165,7 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
     if edge is not None and rectify_gate is not None and rectify_strength is not None:
         focus_target = F.avg_pool2d(edge, kernel_size=7, stride=1, padding=3)
         focus_target = F.interpolate(focus_target, size=rectify_gate.shape[-2:], mode="bilinear", align_corners=False)
-        rectify_loss = F.binary_cross_entropy_with_logits(_prob_to_logits(rectify_gate), focus_target)
+        rectify_loss = _stable_prob_bce(rectify_gate, focus_target)
         rectify_loss = rectify_loss + 0.5 * (rectify_strength * (1.0 - focus_target)).mean()
         if rectified_depth_edge is not None:
             normalized_rectified_edge = rectified_depth_edge / (
@@ -174,10 +181,7 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
                 F.interpolate(rectify_strength.detach(), size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False),
             )
         disagreement_prob = F.interpolate(disagreement_map, size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False)
-        disagreement_loss = F.binary_cross_entropy_with_logits(
-            _prob_to_logits(disagreement_prob),
-            disagreement_target,
-        )
+        disagreement_loss = _stable_prob_bce(disagreement_prob, disagreement_target)
 
     total = (
         float(train_cfg.get("seg_loss_weight", 1.0)) * main_loss
