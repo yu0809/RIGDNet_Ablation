@@ -13,6 +13,10 @@ runs/
 runs_*/
 results/
 results_*/
+*.pth
+*.pt
+*.ckpt
+*.onnx
 
 # generated runtime files
 generated_configs/
