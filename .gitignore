@@ -1,0 +1,20 @@
+__pycache__/
+*.py[cod]
+*.so
+
+.DS_Store
+.venv/
+venv/
+
+# checkpoints and experiment outputs
+checkpoints/
+checkpoints_*/
+runs/
+runs_*/
+results/
+results_*/
+
+# generated runtime files
+generated_configs/
+*.log
+*.tmp

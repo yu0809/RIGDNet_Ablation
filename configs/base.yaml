@@ -1,0 +1,70 @@
+train_dataset:
+  img_dir: ../train/Imgs
+  depth_dir: ../train/Depth_pseudo
+  mask_dir: ../train/GT
+  edge_dir: ../train/Edge
+  image_size: 384
+  augment: true
+  depth_drop_prob: 0.20
+  depth_noise_std: 0.03
+  depth_blur_prob: 0.15
+
+val_dataset:
+  enabled: true
+  img_dir: ../validation/Imgs
+  depth_dir: ../validation/Depth_pseudo
+  mask_dir: ../validation/GT
+  image_size: 384
+
+test_dataset:
+  img_dir: ../test/Imgs
+  depth_dir: ../test/Depth_pseudo
+  mask_dir: ../test/GT
+  image_size: 384
+
+training:
+  batch_size: 4
+  num_workers: 0
+  epoch_max: 100
+  lr: 0.0001
+  min_lr: 0.000001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+  scheduler: cosine
+  grad_clip: 1.0
+  use_amp: true
+
+  seg_loss_weight: 1.0
+  base_loss_weight: 0.25
+  aux_loss_weight: 0.3
+  edge_loss_weight: 0.2
+  gate_loss_weight: 0.05
+  rectify_loss_weight: 0.05
+  disagreement_loss_weight: 0.05
+  uncertainty_loss_weight: 0.03
+  entropy_loss_weight: 0.02
+
+  seed: 42
+  log_interval: 10
+  save_every: 10
+  save_dir: ./runs/default/checkpoints
+  resume: null
+  allow_mps: false
+
+model:
+  backbone_name: resnet50
+  decoder_channels: 96
+  pretrained_backbone: true
+  rgb_weights_path: null
+  depth_init_mode: rgb_average
+  use_depth_branch: true
+  fusion_mode: evidence
+  use_rectifier: true
+  use_disagreement_refinement: true
+  use_edge_branch: true
+
+testing:
+  model_path: ./runs/default/checkpoints/checkpoint_best.pth
+  strict_load: true
+  output_dir: ./runs/default/results
+  save_explain: false

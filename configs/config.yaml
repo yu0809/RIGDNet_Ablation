@@ -1,0 +1,71 @@
+# RIGDNet 默认配置
+
+train_dataset:
+  img_dir: ../train/Imgs
+  depth_dir: ../train/Depth_pseudo
+  mask_dir: ../train/GT
+  edge_dir: ../train/Edge
+  image_size: 384
+  augment: true
+  # 伪深度增强只作用在 D 分支，用于提升对深度噪声/缺失的鲁棒性
+  depth_drop_prob: 0.20
+  depth_noise_std: 0.03
+  depth_blur_prob: 0.15
+
+val_dataset:
+  enabled: true
+  img_dir: ../validation/Imgs
+  depth_dir: ../validation/Depth_pseudo
+  mask_dir: ../validation/GT
+  image_size: 384
+
+test_dataset:
+  img_dir: ../test/Imgs
+  depth_dir: ../test/Depth_pseudo
+  mask_dir: ../test/GT
+  image_size: 384
+
+training:
+  batch_size: 4
+  num_workers: 0
+  epoch_max: 100
+  lr: 0.0001
+  min_lr: 0.000001
+  betas: [0.9, 0.999]
+  weight_decay: 0.0001
+  scheduler: cosine
+  grad_clip: 1.0
+  use_amp: true
+
+  seg_loss_weight: 1.0
+  base_loss_weight: 0.25
+  aux_loss_weight: 0.3
+  edge_loss_weight: 0.2
+  gate_loss_weight: 0.05
+  rectify_loss_weight: 0.05
+  disagreement_loss_weight: 0.05
+  uncertainty_loss_weight: 0.03
+  entropy_loss_weight: 0.02
+
+  seed: 42
+  log_interval: 10
+  save_every: 10
+  save_dir: ./checkpoints
+  resume: null
+  allow_mps: false
+
+model:
+  backbone_name: resnet50
+  decoder_channels: 96
+  # 训练时只给 RGB 分支加载标准 ImageNet-1K 路线预训练；
+  # D 分支若使用 rgb_average，则只复用同一份 RGB 权重，不额外引入深度预训练语义。
+  pretrained_backbone: true
+  rgb_weights_path: null
+  depth_init_mode: rgb_average
+
+testing:
+  # 注意：证据分解式三路门控上线后，历史 checkpoint 需要重新训练才能 strict load。
+  model_path: ./checkpoints/checkpoint_best.pth
+  strict_load: true
+  output_dir: ./results
+  save_explain: false
