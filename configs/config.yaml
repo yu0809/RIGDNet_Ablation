@@ -26,8 +26,8 @@ test_dataset:
   image_size: 384
 
 training:
-  batch_size: 96
-  num_workers: 24
+  batch_size: 192
+  num_workers: 32
   epoch_max: 100
   lr: 0.0001
   min_lr: 0.000001
