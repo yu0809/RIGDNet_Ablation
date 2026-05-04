@@ -431,14 +431,21 @@ def main():
             image_size=int(val_data_cfg.get("image_size", train_data_cfg.get("image_size", 384))),
         )
     
-        val_loader = DataLoader(
-            val_ds,
-            batch_size=1,
-            shuffle=False,
-            num_workers=max(0, int(train_cfg.get("num_workers", 0)) // 2),
-            pin_memory=(device.type == "cuda"),
-            drop_last=False,
-        )
+    val_num_workers = max(0, int(train_cfg.get("num_workers", 0)) // 2)
+    val_batch_size = int(train_cfg.get("val_batch_size", val_data_cfg.get("batch_size", 14)))
+    
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=val_batch_size,
+        shuffle=False,
+        num_workers=val_num_workers,
+        pin_memory=(device.type == "cuda"),
+        drop_last=False,
+        persistent_workers=val_num_workers > 0,
+        prefetch_factor=4 if val_num_workers > 0 else None,
+    )
+
+
 
     raw_model = RIGDNet(
         backbone_name=str(model_cfg.get("backbone_name", "resnet50")),
