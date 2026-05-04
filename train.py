@@ -410,22 +410,32 @@ def main():
     )
     
     train_num_workers = int(train_cfg.get("num_workers", 0))
-    
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=int(train_cfg.get("batch_size", 4)),
-        shuffle=True,
-        num_workers=train_num_workers,
-        pin_memory=(device.type == "cuda"),
-        drop_last=False,
-        persistent_workers=train_num_workers > 0,
-        prefetch_factor=4 if train_num_workers > 0 else None,
-    )
 
+train_loader = DataLoader(
+    train_ds,
+    batch_size=int(train_cfg.get("batch_size", 4)),
+    shuffle=True,
+    num_workers=train_num_workers,
+    pin_memory=(device.type == "cuda"),
+    drop_last=False,
+    persistent_workers=train_num_workers > 0,
+    prefetch_factor=4 if train_num_workers > 0 else None,
+)
+
+# ===== 正确的验证集写法 =====
+val_loader = None
+if bool(val_data_cfg.get("enabled", False)):
+
+    val_ds = RGBDEvalDataset(
+        image_dir=_resolve_path(val_data_cfg["img_dir"]),
+        depth_dir=_resolve_path(val_data_cfg["depth_dir"]),
+        mask_dir=_resolve_path(val_data_cfg["mask_dir"]),
+        image_size=int(val_data_cfg.get("image_size", train_data_cfg.get("image_size", 384))),
+    )
 
     val_num_workers = max(4, int(train_cfg.get("num_workers", 0)) // 2)
     val_batch_size = int(train_cfg.get("val_batch_size", 32))
-    
+
     val_loader = DataLoader(
         val_ds,
         batch_size=val_batch_size,
