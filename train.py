@@ -332,14 +332,25 @@ def evaluate(model, loader, device, train_cfg: Dict):
     loss_meter = utils.AverageMeter()
     metric_meter = {"iou": 0.0, "dice": 0.0, "mae": 0.0, "n": 0}
 
+    use_amp = bool(train_cfg.get("use_amp", True)) and device.type == "cuda"
+
     for batch in tqdm(loader, desc="val", leave=False):
         image = batch["image"].to(device)
         depth = batch["depth"].to(device)
         depth_raw = batch["depth_raw"].to(device)
         mask = batch["mask"].to(device)
 
-        outputs = model(image, depth, depth_raw=depth_raw, output_size=tuple(mask.shape[-2:]))
-        main_loss = utils.structure_loss(outputs["logits"], mask)
+        amp_ctx = torch.amp.autocast(device_type="cuda", enabled=use_amp) if use_amp else nullcontext()
+
+        with amp_ctx:
+            outputs = model(
+                image,
+                depth,
+                depth_raw=depth_raw,
+                output_size=tuple(mask.shape[-2:])
+            )
+            main_loss = utils.structure_loss(outputs["logits"], mask)
+
         loss_meter.update(main_loss.item(), image.size(0))
 
         metrics = utils.compute_metrics(outputs["logits"], mask)
@@ -410,24 +421,21 @@ def main():
         persistent_workers=train_num_workers > 0,
         prefetch_factor=4 if train_num_workers > 0 else None,
     )
-    
-    val_loader = None
-    if bool(val_data_cfg.get("enabled", False)):
-        val_ds = RGBDEvalDataset(
-            image_dir=_resolve_path(val_data_cfg["img_dir"]),
-            depth_dir=_resolve_path(val_data_cfg["depth_dir"]),
-            mask_dir=_resolve_path(val_data_cfg["mask_dir"]),
-            image_size=int(val_data_cfg.get("image_size", train_data_cfg.get("image_size", 384))),
-        )
 
-        val_loader = DataLoader(
-            val_ds,
-            batch_size=1,
-            shuffle=False,
-            num_workers=max(0, int(train_cfg.get("num_workers", 0)) // 2),
-            pin_memory=(device.type == "cuda"),
-            drop_last=False,
-        )
+
+    val_num_workers = max(4, int(train_cfg.get("num_workers", 0)) // 2)
+    val_batch_size = int(train_cfg.get("val_batch_size", 32))
+    
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=val_batch_size,
+        shuffle=False,
+        num_workers=val_num_workers,
+        pin_memory=(device.type == "cuda"),
+        drop_last=False,
+        persistent_workers=val_num_workers > 0,
+        prefetch_factor=4 if val_num_workers > 0 else None,
+    )
 
     raw_model = RIGDNet(
         backbone_name=str(model_cfg.get("backbone_name", "resnet50")),
