@@ -397,33 +397,32 @@ def main():
         depth_noise_std=float(train_data_cfg.get("depth_noise_std", 0.0)),
         depth_blur_prob=float(train_data_cfg.get("depth_blur_prob", 0.0)),
     )
-
+    
+    train_num_workers = int(train_cfg.get("num_workers", 0))
+    
     train_loader = DataLoader(
         train_ds,
         batch_size=int(train_cfg.get("batch_size", 4)),
         shuffle=True,
-        num_workers=int(train_cfg.get("num_workers", 0)),
+        num_workers=train_num_workers,
         pin_memory=(device.type == "cuda"),
         drop_last=False,
+        persistent_workers=train_num_workers > 0,
+        prefetch_factor=4 if train_num_workers > 0 else None,
     )
-
-    val_loader = None
-    if bool(val_data_cfg.get("enabled", False)):
-        val_ds = RGBDEvalDataset(
-            image_dir=_resolve_path(val_data_cfg["img_dir"]),
-            depth_dir=_resolve_path(val_data_cfg["depth_dir"]),
-            mask_dir=_resolve_path(val_data_cfg["mask_dir"]),
-            image_size=int(val_data_cfg.get("image_size", train_data_cfg.get("image_size", 384))),
-        )
-
-        val_loader = DataLoader(
-            val_ds,
-            batch_size=1,
-            shuffle=False,
-            num_workers=max(0, int(train_cfg.get("num_workers", 0)) // 2),
-            pin_memory=(device.type == "cuda"),
-            drop_last=False,
-        )
+    
+    val_num_workers = max(0, int(train_cfg.get("num_workers", 0)) // 2)
+    
+    val_loader = DataLoader(
+        val_ds,
+        batch_size=1,
+        shuffle=False,
+        num_workers=val_num_workers,
+        pin_memory=(device.type == "cuda"),
+        drop_last=False,
+        persistent_workers=val_num_workers > 0,
+        prefetch_factor=4 if val_num_workers > 0 else None,
+    )
 
     raw_model = RIGDNet(
         backbone_name=str(model_cfg.get("backbone_name", "resnet50")),
