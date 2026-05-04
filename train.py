@@ -26,7 +26,7 @@ def _resolve_path(path: Optional[str]) -> Optional[str]:
     return p
 
 
-def _build_optimizer(model: RIGDNet, train_cfg: Dict) -> torch.optim.Optimizer:
+def _build_optimizer(model: torch.nn.Module, train_cfg: Dict) -> torch.optim.Optimizer:
     return torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg.get("lr", 1e-4)),
@@ -40,7 +40,11 @@ def _build_scheduler(optimizer: torch.optim.Optimizer, train_cfg: Dict):
     epoch_max = int(train_cfg.get("epoch_max", 10))
     min_lr = float(train_cfg.get("min_lr", 1e-6))
     if scheduler_name == "cosine":
-        return torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epoch_max, eta_min=min_lr)
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=epoch_max,
+            eta_min=min_lr,
+        )
     return None
 
 
@@ -49,30 +53,35 @@ def _normalize_gate_target(target: torch.Tensor) -> torch.Tensor:
 
 
 def _prob_to_logits(prob: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
-    # Under AMP, probabilities can numerically snap to 0/1 in fp16.
-    # Convert in fp32 with a larger epsilon before taking the logit.
     prob = prob.float().clamp(eps, 1.0 - eps)
     return torch.logit(prob, eps=eps)
 
 
 def _stable_prob_bce(prob: torch.Tensor, target: torch.Tensor, eps: float = 1e-4) -> torch.Tensor:
     logits = _prob_to_logits(prob, eps=eps)
-    return F.binary_cross_entropy_with_logits(logits, target.float().to(dtype=logits.dtype))
+    return F.binary_cross_entropy_with_logits(
+        logits,
+        target.float().to(dtype=logits.dtype),
+    )
 
 
-def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tensor], train_cfg: Dict) -> Dict[str, torch.Tensor]:
+def _compute_losses(
+    outputs: Dict,
+    mask: torch.Tensor,
+    edge: Optional[torch.Tensor],
+    train_cfg: Dict,
+) -> Dict[str, torch.Tensor]:
     main_loss = utils.structure_loss(outputs["logits"], mask)
+
     base_logits = outputs.get("base_logits", None)
-    if base_logits is not None:
-        base_loss = utils.structure_loss(base_logits, mask)
-    else:
-        base_loss = mask.new_tensor(0.0)
+    base_loss = utils.structure_loss(base_logits, mask) if base_logits is not None else mask.new_tensor(0.0)
 
     aux_logits = outputs.get("aux_logits", [])
-    if aux_logits:
-        aux_loss = torch.stack([utils.structure_loss(aux_logit, mask) for aux_logit in aux_logits]).mean()
-    else:
-        aux_loss = mask.new_tensor(0.0)
+    aux_loss = (
+        torch.stack([utils.structure_loss(aux_logit, mask) for aux_logit in aux_logits]).mean()
+        if aux_logits
+        else mask.new_tensor(0.0)
+    )
 
     edge_logits = outputs.get("edge_logits", None)
     if edge is not None and edge_logits is not None:
@@ -85,6 +94,7 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
     disagreement_loss = mask.new_tensor(0.0)
     uncertainty_loss = mask.new_tensor(0.0)
     entropy_loss = mask.new_tensor(0.0)
+
     explain = outputs.get("explain", {})
     rgb_gates = explain.get("rgb_gate", [])
     depth_gates = explain.get("depth_gate", [])
@@ -144,7 +154,12 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
             [
                 _stable_prob_bce(
                     boundary,
-                    F.interpolate(edge_target, size=boundary.shape[-2:], mode="bilinear", align_corners=False),
+                    F.interpolate(
+                        edge_target,
+                        size=boundary.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    ),
                 )
                 for boundary in boundary_uncertainties
             ]
@@ -156,7 +171,12 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
             [
                 F.l1_loss(
                     entropy,
-                    F.interpolate(entropy_target, size=entropy.shape[-2:], mode="bilinear", align_corners=False),
+                    F.interpolate(
+                        entropy_target,
+                        size=entropy.shape[-2:],
+                        mode="bilinear",
+                        align_corners=False,
+                    ),
                 )
                 for entropy in gate_entropies
             ]
@@ -164,9 +184,15 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
 
     if edge is not None and rectify_gate is not None and rectify_strength is not None:
         focus_target = F.avg_pool2d(edge, kernel_size=7, stride=1, padding=3)
-        focus_target = F.interpolate(focus_target, size=rectify_gate.shape[-2:], mode="bilinear", align_corners=False)
+        focus_target = F.interpolate(
+            focus_target,
+            size=rectify_gate.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
         rectify_loss = _stable_prob_bce(rectify_gate, focus_target)
         rectify_loss = rectify_loss + 0.5 * (rectify_strength * (1.0 - focus_target)).mean()
+
         if rectified_depth_edge is not None:
             normalized_rectified_edge = rectified_depth_edge / (
                 rectified_depth_edge.amax(dim=(2, 3), keepdim=True) + 1e-6
@@ -178,9 +204,20 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
         if rectify_strength is not None:
             disagreement_target = torch.maximum(
                 disagreement_target,
-                F.interpolate(rectify_strength.detach(), size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False),
+                F.interpolate(
+                    rectify_strength.detach(),
+                    size=disagreement_target.shape[-2:],
+                    mode="bilinear",
+                    align_corners=False,
+                ),
             )
-        disagreement_prob = F.interpolate(disagreement_map, size=disagreement_target.shape[-2:], mode="bilinear", align_corners=False)
+
+        disagreement_prob = F.interpolate(
+            disagreement_map,
+            size=disagreement_target.shape[-2:],
+            mode="bilinear",
+            align_corners=False,
+        )
         disagreement_loss = _stable_prob_bce(disagreement_prob, disagreement_target)
 
     total = (
@@ -211,6 +248,7 @@ def _compute_losses(outputs: Dict, mask: torch.Tensor, edge: Optional[torch.Tens
 
 def train_one_epoch(model, loader, optimizer, scaler, device, train_cfg: Dict):
     model.train()
+
     total_meter = utils.AverageMeter()
     main_meter = utils.AverageMeter()
     base_meter = utils.AverageMeter()
@@ -227,6 +265,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, train_cfg: Dict):
     log_interval = int(train_cfg.get("log_interval", 10))
 
     pbar = tqdm(enumerate(loader, 1), total=len(loader), desc="train", leave=False)
+
     for step, batch in pbar:
         image = batch["image"].to(device)
         depth = batch["depth"].to(device)
@@ -236,15 +275,18 @@ def train_one_epoch(model, loader, optimizer, scaler, device, train_cfg: Dict):
         edge = edge.to(device) if edge is not None else None
 
         optimizer.zero_grad(set_to_none=True)
+
         amp_ctx = torch.amp.autocast(device_type="cuda", enabled=True) if use_amp else nullcontext()
         with amp_ctx:
             outputs = model(image, depth, depth_raw=depth_raw, output_size=tuple(mask.shape[-2:]))
             losses = _compute_losses(outputs, mask, edge, train_cfg)
 
         scaler.scale(losses["total"]).backward()
+
         if grad_clip > 0:
             scaler.unscale_(optimizer)
             torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
         scaler.step(optimizer)
         scaler.update()
 
@@ -286,6 +328,7 @@ def train_one_epoch(model, loader, optimizer, scaler, device, train_cfg: Dict):
 @torch.no_grad()
 def evaluate(model, loader, device, train_cfg: Dict):
     model.eval()
+
     loss_meter = utils.AverageMeter()
     metric_meter = {"iou": 0.0, "dice": 0.0, "mae": 0.0, "n": 0}
 
@@ -301,12 +344,14 @@ def evaluate(model, loader, device, train_cfg: Dict):
 
         metrics = utils.compute_metrics(outputs["logits"], mask)
         bs = image.size(0)
+
         metric_meter["iou"] += metrics["iou"] * bs
         metric_meter["dice"] += metrics["dice"] * bs
         metric_meter["mae"] += metrics["mae"] * bs
         metric_meter["n"] += bs
 
     n = max(1, metric_meter["n"])
+
     return {
         "loss": loss_meter.avg,
         "iou": metric_meter["iou"] / n,
@@ -323,6 +368,7 @@ def main():
     args = parser.parse_args()
 
     config_path = _resolve_path(args.config)
+
     with open(config_path, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
 
@@ -332,6 +378,7 @@ def main():
     val_data_cfg = cfg.get("val_dataset", {})
 
     utils.set_seed(int(train_cfg.get("seed", 42)))
+
     device = utils.prepare_device(prefer_mps=bool(train_cfg.get("allow_mps", False)))
     print(f"使用设备: {device}")
 
@@ -350,6 +397,7 @@ def main():
         depth_noise_std=float(train_data_cfg.get("depth_noise_std", 0.0)),
         depth_blur_prob=float(train_data_cfg.get("depth_blur_prob", 0.0)),
     )
+
     train_loader = DataLoader(
         train_ds,
         batch_size=int(train_cfg.get("batch_size", 4)),
@@ -367,6 +415,7 @@ def main():
             mask_dir=_resolve_path(val_data_cfg["mask_dir"]),
             image_size=int(val_data_cfg.get("image_size", train_data_cfg.get("image_size", 384))),
         )
+
         val_loader = DataLoader(
             val_ds,
             batch_size=1,
@@ -376,7 +425,7 @@ def main():
             drop_last=False,
         )
 
-    model = RIGDNet(
+    raw_model = RIGDNet(
         backbone_name=str(model_cfg.get("backbone_name", "resnet50")),
         decoder_channels=int(model_cfg.get("decoder_channels", 96)),
         pretrained_backbone=bool(model_cfg.get("pretrained_backbone", True)),
@@ -389,26 +438,51 @@ def main():
         use_edge_branch=bool(model_cfg.get("use_edge_branch", True)),
     ).to(device)
 
+    model = raw_model
+
+    if device.type == "cuda" and torch.cuda.device_count() > 1:
+        gpu_count = torch.cuda.device_count()
+        print(f"启用多卡 DataParallel: {gpu_count} GPUs")
+        model = torch.nn.DataParallel(raw_model)
+
     optimizer = _build_optimizer(model, train_cfg)
     scheduler = _build_scheduler(optimizer, train_cfg)
-    scaler = torch.amp.GradScaler("cuda", enabled=bool(train_cfg.get("use_amp", True)) and device.type == "cuda")
+
+    scaler = torch.amp.GradScaler(
+        "cuda",
+        enabled=bool(train_cfg.get("use_amp", True)) and device.type == "cuda",
+    )
 
     start_epoch = 1
     best_iou = -1.0
+
     resume_path = args.resume or train_cfg.get("resume")
     if resume_path:
         resume_path = _resolve_path(resume_path)
+
         if not os.path.isfile(resume_path):
             raise FileNotFoundError(f"恢复权重不存在: {resume_path}")
+
         ckpt = torch.load(resume_path, map_location=device)
         state_dict = ckpt.get("model", ckpt)
-        model.load_state_dict(state_dict, strict=False)
+
+        if any(k.startswith("module.") for k in state_dict.keys()):
+            state_dict = {
+                k.replace("module.", "", 1): v
+                for k, v in state_dict.items()
+            }
+
+        raw_model.load_state_dict(state_dict, strict=False)
+
         if isinstance(ckpt, dict) and "optimizer" in ckpt:
             optimizer.load_state_dict(ckpt["optimizer"])
-            if scheduler is not None and "scheduler" in ckpt:
+
+            if scheduler is not None and "scheduler" in ckpt and ckpt["scheduler"] is not None:
                 scheduler.load_state_dict(ckpt["scheduler"])
+
             start_epoch = int(ckpt.get("epoch", 0)) + 1
             best_iou = float(ckpt.get("best_iou", -1.0))
+
         print(f"恢复训练: {resume_path}, start_epoch={start_epoch}")
 
     epoch_max = int(train_cfg.get("epoch_max", 10))
@@ -440,7 +514,13 @@ def main():
 
         val_stats = None
         if val_loader is not None:
-            val_stats = evaluate(model=model, loader=val_loader, device=device, train_cfg=train_cfg)
+            val_stats = evaluate(
+                model=model,
+                loader=val_loader,
+                device=device,
+                train_cfg=train_cfg,
+            )
+
             msg += (
                 f" val_loss={val_stats['loss']:.4f}"
                 f" iou={val_stats['iou']:.4f}"
@@ -450,29 +530,35 @@ def main():
 
             if val_stats["iou"] > best_iou:
                 best_iou = val_stats["iou"]
+
                 best_payload = {
                     "epoch": epoch,
-                    "model": model.state_dict(),
+                    "model": raw_model.state_dict(),
                     "optimizer": optimizer.state_dict(),
                     "scheduler": scheduler.state_dict() if scheduler is not None else None,
                     "best_iou": best_iou,
                     "metric_name": "iou",
                     "config": cfg,
                 }
+
                 utils.save_checkpoint(best_payload, best_ckpt)
 
         latest_payload = {
             "epoch": epoch,
-            "model": model.state_dict(),
+            "model": raw_model.state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict() if scheduler is not None else None,
             "best_iou": best_iou,
             "config": cfg,
         }
+
         utils.save_checkpoint(latest_payload, latest_ckpt)
 
         if save_every > 0 and epoch % save_every == 0:
-            utils.save_checkpoint(latest_payload, os.path.join(save_dir, f"checkpoint_epoch_{epoch}.pth"))
+            utils.save_checkpoint(
+                latest_payload,
+                os.path.join(save_dir, f"checkpoint_epoch_{epoch}.pth"),
+            )
 
         if scheduler is not None:
             scheduler.step()
